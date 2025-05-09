@@ -1,15 +1,12 @@
 import asyncio
 import json
 import os
+import queue  # Added missing import
+from datetime import datetime  # Added missing import
 from typing import Dict, List, Optional, Any, Type
 
 from pydantic import BaseModel, Field
 
-# Assuming Manus, ToolCollection, Terminate, Tool are defined elsewhere
-# For example, in a file named 'base_classes.py' or similar
-# from .base_classes import Manus, ToolCollection, Terminate, Tool
-
-# Placeholder for Manus, ToolCollection, Terminate, Tool for standalone execution
 class Manus:
     def __init__(self, **kwargs):
         self.name = kwargs.get("name", "Manus")
@@ -17,7 +14,8 @@ class Manus:
         self.system_prompt = kwargs.get("system_prompt", "")
         self.next_step_prompt = kwargs.get("next_step_prompt", "")
         self.tools = ToolCollection([])
-        self.memory = None # Simplified for this example
+        self.memory = None  # Simplified for this example
+        self.event_q = None  # Initialize event_q
 
     async def think(self):
         pass
@@ -31,7 +29,7 @@ class Manus:
         
         # Simulate some processing
         await asyncio.sleep(1)
-        self._send_event("log", f"{self.name} received prompt: {prompt}")
+        await self._send_event("log", f"{self.name} received prompt: {prompt}")
         
         # Simulate some actions and tool usage
         if "search" in prompt.lower():
@@ -52,9 +50,6 @@ class Manus:
             self.event_q.put(event)
 
 class Tool:
-    name: str
-    description: str
-
     def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
@@ -71,8 +66,6 @@ class ToolCollection:
 
     def get_tool(self, name: str) -> Optional[Tool]:
         return self.tools.get(name)
-
-# End of placeholder classes
 
 ORCHESTRATOR_SYSTEM_PROMPT = (
     "You are the Orchestrator Agent for the OpenManus Multi-Agent System. "
@@ -98,35 +91,35 @@ ORCHESTRATOR_NEXT_STEP_PROMPT = """Review the user's request, your current plan,
 If the overall task is complete, use the `Terminate` tool."""
 
 class DelegateTaskTool(Tool):
-    name: str = "delegate_task_to_specialist"
-    description: str = "Delegates a sub-task to a specialized agent. Provide the agent_role and the sub_task_prompt."
-    args_schema: Any = None # Simplified for this example
+    def __init__(self):
+        super().__init__(
+            name="delegate_task_to_specialist",
+            description="Delegates a sub-task to a specialized agent. Provide the agent_role and the sub_task_prompt."
+        )
+        self.args_schema = None
 
     async def execute(self, agent_role: str, sub_task_prompt: str) -> str:
-        # This is a placeholder for the actual delegation logic
-        # In a real scenario, this would involve calling the specialized agent
-        # and returning its response.
-        return f"Delegation to {agent_role} with prompt 	'{sub_task_prompt}'	 will be handled by Orchestrator."
+        return f"Delegation to {agent_role} with prompt '{sub_task_prompt}' will be handled by Orchestrator."
 
 class TerminateTool(Tool):
-    name: str = "Terminate"
-    description: str = "Terminates the current task and provides a final message."
-    args_schema: Any = None # Simplified for this example
+    def __init__(self):
+        super().__init__(
+            name="Terminate",
+            description="Terminates the current task and provides a final message."
+        )
+        self.args_schema = None
 
     async def execute(self, message: str) -> str:
         return f"Task terminated with message: {message}"
 
 class OrchestratorAgent(Manus):
-    name: str = "OrchestratorAgent"
-    description: str = "Coordinates specialized agents to solve complex tasks."
-
     def __init__(self, event_q: Optional[queue.Queue] = None, **kwargs: Any):
         super().__init__(**kwargs)
         self.event_q = event_q
-        self.system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(directory=os.getcwd()) # Use os.getcwd() for current directory
+        self.system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(directory=os.getcwd())
         self.next_step_prompt = ORCHESTRATOR_NEXT_STEP_PROMPT
+        self.memory = []  # Initialize memory as a list
         
-        # Initialize tools
         self.tools = ToolCollection([
             DelegateTaskTool(),
             TerminateTool()
@@ -140,9 +133,9 @@ class OrchestratorAgent(Manus):
             self.event_q = event_q
 
         await self._send_event("log", f"Orchestrator received prompt: {prompt}")
-        self.memory.add_message(role="user", content=prompt)
+        if self.memory is not None:
+            self.memory.append({"role": "user", "content": prompt})
 
-        # Simplified logic for demonstration
         if "search" in prompt.lower() or "find" in prompt.lower():
             await self._send_event("log", "Delegating to WebSearchAgent")
             response = await self.tools.get_tool("delegate_task_to_specialist").execute(
@@ -159,26 +152,19 @@ class OrchestratorAgent(Manus):
             await self._send_event("log", f"CodingAgent response: {response}")
         else:
             await self._send_event("log", "Orchestrator handling the request directly.")
-            # Simulate some processing by the orchestrator itself
             await asyncio.sleep(1)
             response = "Orchestrator processed the request."
             await self._send_event("log", response)
 
-        # Terminate the task (example)
         await self._send_event("log", "Orchestrator terminating the task.")
         final_response = await self.tools.get_tool("Terminate").execute(message="Task concluded by Orchestrator.")
         await self._send_event("final_result", final_response)
 
-# Example usage (for testing purposes)
 async def main():
-    # Create a dummy event queue for testing
     event_q = queue.Queue()
-
-    # Instantiate and run the OrchestratorAgent
     orchestrator = OrchestratorAgent(event_q=event_q)
     await orchestrator.run("Find information about the latest AI advancements and then write a short summary.")
 
-    # Print events from the queue (optional, for debugging)
     while not event_q.empty():
         event = event_q.get_nowait()
         print(f"Event: {event}")
